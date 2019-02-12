@@ -1,0 +1,179 @@
+Version 0.2
+
+Build:
+	You need gnuradio-3.3.0 installed.
+
+	Untar and cd into the omnipod-v0.1 directory.
+		./bootstrap
+		./configure
+		make
+		sudo make install
+
+	The first time you install you also need to do a 'sudo ldconfig'
+	so that you can find the new shared libraries.
+
+Run:
+	The omnidemod.py file is the Python script that runs the signal
+	processing block.  Use the '-h' option to list out the options.
+
+---
+
+
+Looking at the raw complex values during transmission indicates that
+this is an amplitude modulated signal.  The amplitude of the carrier
+goes on for a period and then off for a period.  Originally I considered
+the possibility that there was a phase modulation there, but the fact
+that the amplitude goes off at regular periods indicates this is really
+just a simple AM signal.  Moreover, the documentation we've found seems
+to to agree with this.
+
+At first I thought that the signal was Manchester encoded.  Manchester
+is characterized by a transition in the center of each symbol.  For
+example, low-high could be considered a "0" and then a high-low would be
+considered a "1".  If this is the case, then by counting samples we find
+that the signal is sent at 2kbps.  There are a couple of reasons, at
+least in my mind, why Manchester encoding is "nice."  First, it allows
+you to recover the transmitting clock because you know there is a
+transition at the center of each bit.  Second, it doesn't allow bias in
+the signal.  That is, even with a long string of equivalent values, your
+signal isn't always low or always high.  This is important because of
+the way one detects the signal in the noise.  (Briefly, I take an
+average of all the samples in a certain range.  If my current sample is
+above or below the average, I consider that sample high or low.  If
+there is a string of "0" being transmitted that exceeds the length of
+samples I am averaging over, then I can't tell the difference between
+signal and noise.)  Finally, Manchester is "nice" because even with the
+transition it is still a very simple modulation scheme.
+
+However, the documentation that Ian has found indicates that this is a
+NRZ (non-return to zero) signal at 4kbps.  NRZ is characterized by a
+high considered as a "1" and low considered as a "0".  (I.e., pretty
+much the simplest thing you can think of.)
+
+The issue is that our signal is _almost_ Manchester.  In almost all bits
+there is a transition at what one could call the center.  The only
+exception is that there is a strange symbol which I've been calling the
+"sync" bit and around the sync bit there are sometimes missing
+transitions.  The sync bit is a high signal for 2.5 bits (at the 4kbps
+transmission rate) which doesn't make sense in either Manchester or NRZ.
+The symbols before the sync bit are fixed in every signal I've looked
+at which is why I've been calling this a sync bit -- basically a fixed
+pattern to look for indicating the start of a transmission.
+
+Now we could just agree with the documentation we've found and assume
+that this is a simple NRZ scheme and that the sync bit indicates the
+start of useful data.  The problem here is that, other than around the
+sync bit, it really looks Manchester!  Logically one can consider
+Manchester as a NRZ encoding.  The only issue is that this makes data
+real hard to interpret.  Consider trying to transmit the value 8.  In
+binary this is 1000.  In NRZ, this would be "high-low-low-low."  However
+our data almost always has Manchester transitions and, except perhaps
+near the sync, we never see 3 of any high or low in a row.  (Note that
+in Manchester you can see 2 high or low in a row.  For example, "10"
+would be high-low-low-high.  You just won't see 3 in a row.)  This means
+that we can't interpret any value that would require three of the same
+values in a row like 8.
+
+Given that I don't really know the correct interpretation of the signal,
+my current program gives the option to try a couple of different
+representations of the data.
+
+The first representation is a "compression" of what the signal looks
+like.  That is, I output "-" when the signal is high for a bit period
+and "_" when it is low for a bit period.  (I output a "S" for the sync
+period and "*" for when the signal isn't held high or low long enough,
+or when held too long.  That is, a "*" is an error.)  In this case you
+can see a representation of what the signal looks like without having to
+deal with tens of millions of raw samples and GNUPlot.
+
+The next representation assumes a NRZ modulation scheme.  There is no
+real difference between this representation and the above one.  The only
+difference is that I output a "1" rather than a "-" and a "0" rather
+than a "_".
+
+The next representation is my best guess representation.  The bits up to
+the sync bit and a half-bit afterwords are skipped.  At this point, the
+rest of the data is, as far as I've seen, Manchester encoded.  This
+guess seems to be reasonable not just because the rest of the data is
+Manchester encoded, but also because by skipping the first half-bit it
+allows the first bit to be either 0 or 1.  This is because the sync
+symbol is always high and, to differentiate it, the next symbol must be
+low.  If the next symbol were part of the Manchester encoded data, this
+would force the first bit to always be 0.  By skipping this symbol, we
+can have any value as the first bit.  Since the symbols before the sync
+symbol along with the immediately following symbol are always the same,
+it is reasonable to assume that this representation is correct.
+
+---
+
+
+Pulse Interval Encoding
+	A 1 is high-high-low and a 0 is high-low.
+
+	Data is probably not PIE as there is not a preponderance of high
+	signals.
+
+
+FM0
+	Inverts phase at every symbol boundary.  A 0 has a mid-phase
+	inversion.
+
+	This is a possibility if we don't skip the first symbol.  This
+	also allows the first bit to be arbitrary even though sync is
+	held high.
+
+	In fact, the sync symbol is similar to a FM0 RFID preamble if we
+	interpret it as high-high-high where the first high is the
+	second half of a low-high symbol.  That is, a non-inversion at
+	the symbol boundary and hence a violation as included in the RFID
+	specification.
+
+	This seems very promising.
+
+
+Miller
+	Pure Miller inverts its phase between two Data‐0s in sequence
+	and has a phase inversion in the middle of a Data‐1 symbol.
+	
+	A Miller with sub-carrier has the baseband waveform multiplied
+	by a square wave at M times the symbol rate for M = 2, 4, 8.
+	Specifically, for M = 2, there are two square waves in each bit.
+	(The square wave is xor'ed with the signal wave, not multiplied.)
+
+	Can't be Miller with a sub-carrier.  For M = 2 we have 0's in
+	sequence without a transition.
+
+	Can't be Pure Miller as there are transitions at the start.
+
+	Removing it.
+
+
+Differential Manchester
+	There is always a transition at the center of a bit.  A
+	transition at the start of the bit is a "1".  No transition is a
+	"0".
+
+6b/8b, 8b/10b
+	This is possible, however it would have to be encoded again as
+	both can have continuous strings of similar values.
+
+
+---
+
+My current best guess is that the preamble is a fixed pattern that ends
+with a 1.5-bit high symbol.  This pattern never changes and so we don't
+have to decode it.  However, Using Manchester decoding, it is:
+
+	1101111110
+
+This is a 10-bit sequence and so the question is now if we have a 8b/10b
+encoding to decode.
+
+In any case, The next symbol after the preamble could be high or low.
+In the case that it is high, there is a 2.5-bit high symbol detected
+which I am now interpreting as the final 1.5-bit symbol of the preamble
+followed by a 1-bit high symbol.  Given the way I demod, this must be
+special-cased.
+
+At this point I am creating a debug branch with all the current
+experiments.  I am then going back to the master branch and cleaning up.
